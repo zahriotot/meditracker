@@ -1,0 +1,35 @@
+# Environnement et secrets
+.env
+*.env
+
+# Git
+.git
+.gitignore
+.gitpod.dockerfile
+.gitpod.yml
+
+# Python cache
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+
+# Logs
+*.log
+
+# Editeur
+.vscode
+.idea
+
+# Fichiers inutiles pour le container
+wireframes/
+*.md
+README.md
+TESTING.md
+
+# Jenkins
+Jenkinsfile*
+
+# Docker lui-même
+docker-compose*.yml
+Dockerfile*

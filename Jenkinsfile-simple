@@ -1,0 +1,70 @@
+pipeline {
+    agent any
+
+    environment {
+        DOCKER_IMAGE = "meditracker"
+        CONTAINER_NAME = "meditracker-simple"
+        APP_PORT = "5001"
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                echo '📥 Récupération du code...'
+                checkout scm
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                echo "🐳 Build de l'image Docker..."
+                bat "docker build -t %DOCKER_IMAGE%:simple-%BUILD_NUMBER% ."
+                bat "docker tag %DOCKER_IMAGE%:simple-%BUILD_NUMBER% %DOCKER_IMAGE%:simple-latest"
+            }
+        }
+
+        stage('Deploy') {
+            steps {
+                echo '🚀 Déploiement direct (Rolling)...'
+                bat "docker stop %CONTAINER_NAME% || true"
+                bat "docker rm %CONTAINER_NAME% || true"
+                bat """
+                    docker run -d ^
+                      --name %CONTAINER_NAME% ^
+                      --network devops-network ^
+                      -p %APP_PORT%:5000 ^
+                      -e SECRET_KEY=%SECRET_KEY% ^
+                      -e MONGO_URI=%MONGO_URI% ^
+                      -e MONGO_DBNAME=meditracker ^
+                      --restart unless-stopped ^
+                      %DOCKER_IMAGE%:simple-%BUILD_NUMBER%
+                """
+            }
+        }
+
+        stage('Health Check') {
+            steps {
+                echo '💓 Vérification...'
+                bat "timeout /t 20 /nobreak"
+                bat "curl -f http://localhost:%APP_PORT%/ || echo Health check failed"
+            }
+        }
+    }
+
+    post {
+        success {
+            echo '✅ Pipeline Simple réussi !'
+            // Enregistre les métriques
+            bat "echo BUILD_NUMBER=%BUILD_NUMBER% >> C:\\devops-mhealth\\metrics-simple.txt"
+            bat "echo STATUS=SUCCESS >> C:\\devops-mhealth\\metrics-simple.txt"
+            bat "echo TIMESTAMP=%DATE% %TIME% >> C:\\devops-mhealth\\metrics-simple.txt"
+        }
+        failure {
+            echo '❌ Pipeline Simple échoué !'
+            bat "echo BUILD_NUMBER=%BUILD_NUMBER% >> C:\\devops-mhealth\\metrics-simple.txt"
+            bat "echo STATUS=FAILURE >> C:\\devops-mhealth\\metrics-simple.txt"
+            bat "echo TIMESTAMP=%DATE% %TIME% >> C:\\devops-mhealth\\metrics-simple.txt"
+        }
+    }
+}

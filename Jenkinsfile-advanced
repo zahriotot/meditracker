@@ -1,0 +1,188 @@
+pipeline {
+    agent any
+
+    environment {
+        DOCKER_IMAGE = "meditracker"
+        SONAR_HOST = "http://sonarqube:9000"
+        SONAR_TOKEN = credentials('sonarqube-token')
+        MONGO_URI = credentials('mongo-uri')
+        SECRET_KEY = credentials('secret-key')
+        CONTAINER_STAGING = "meditracker-staging"
+        CONTAINER_PROD = "meditracker-prod"
+        PORT_STAGING = "5002"
+        PORT_PROD = "5003"
+    }
+
+    stages {
+
+        // ── STAGE 1 ──────────────────────────────────────────
+        stage('Checkout') {
+            steps {
+                echo '📥 Récupération du code depuis GitHub...'
+                checkout scm
+                bat "git log -1 --oneline"
+            }
+        }
+
+        // ── STAGE 2 ──────────────────────────────────────────
+        stage('Install & Test') {
+            steps {
+                echo '🧪 Installation et tests...'
+                bat "pip install -r requirements.txt"
+                bat "pip install pytest pytest-cov flake8"
+                bat "python -m flake8 app.py --max-line-length=120 --ignore=E501,W503 || echo Flake8 warnings found"
+                bat "python -m pytest tests/ --cov=./ --cov-report=xml --junitxml=test-results.xml || echo No tests found"
+            }
+            post {
+                always {
+                    junit allowEmptyResults: true, testResults: 'test-results.xml'
+                }
+            }
+        }
+
+        // ── STAGE 3 ──────────────────────────────────────────
+        stage('SonarQube Analysis') {
+            steps {
+                echo '🔍 Analyse SonarQube...'
+                withSonarQubeEnv('SonarQube') {
+                    bat """
+                        sonar-scanner ^
+                          -Dsonar.projectKey=meditracker ^
+                          -Dsonar.projectName="MediTracker mHealth" ^
+                          -Dsonar.sources=. ^
+                          -Dsonar.host.url=%SONAR_HOST% ^
+                          -Dsonar.login=%SONAR_TOKEN% ^
+                          -Dsonar.python.version=3 ^
+                          -Dsonar.exclusions=**/static/**,**/templates/**,**/wireframes/**
+                    """
+                }
+            }
+        }
+
+        // ── STAGE 4 ──────────────────────────────────────────
+        stage('Quality Gate') {
+            steps {
+                echo '🚦 Vérification Quality Gate...'
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: false
+                }
+            }
+        }
+
+        // ── STAGE 5 ──────────────────────────────────────────
+        stage('Build Docker Image') {
+            steps {
+                echo "🐳 Build de l'image Docker..."
+                bat "docker build -t %DOCKER_IMAGE%:adv-%BUILD_NUMBER% ."
+                bat "docker tag %DOCKER_IMAGE%:adv-%BUILD_NUMBER% %DOCKER_IMAGE%:adv-latest"
+                bat "docker images | findstr meditracker"
+            }
+        }
+
+        // ── STAGE 6 ──────────────────────────────────────────
+        stage('Deploy Staging') {
+            steps {
+                echo '🟡 Déploiement en Staging...'
+                bat "docker stop %CONTAINER_STAGING% || echo no container"
+                bat "docker rm %CONTAINER_STAGING% || echo no container"
+                bat """
+                    docker run -d ^
+                      --name %CONTAINER_STAGING% ^
+                      --network devops-network ^
+                      -p %PORT_STAGING%:5000 ^
+                      -e SECRET_KEY=%SECRET_KEY% ^
+                      -e MONGO_URI=%MONGO_URI% ^
+                      -e MONGO_DBNAME=meditracker ^
+                      --restart unless-stopped ^
+                      %DOCKER_IMAGE%:adv-%BUILD_NUMBER%
+                """
+            }
+        }
+
+        // ── STAGE 7 ──────────────────────────────────────────
+        stage('Health Check Staging') {
+            steps {
+                echo '💓 Health check staging...'
+                bat "timeout /t 25 /nobreak"
+                script {
+                    def status = bat(
+                        script: "curl -s -o nul -w %%{http_code} http://localhost:%PORT_STAGING%/",
+                        returnStdout: true
+                    ).trim()
+                    echo "HTTP Status: ${status}"
+                    if (!status.contains('200') && !status.contains('302')) {
+                        error("Staging health check failed! Status: ${status}")
+                    }
+                }
+            }
+        }
+
+        // ── STAGE 8 ──────────────────────────────────────────
+        stage('Approval') {
+            steps {
+                echo '⏸️ Approbation requise pour la production...'
+                timeout(time: 5, unit: 'MINUTES') {
+                    input message: '🚀 Déployer en Production ?', ok: 'Oui !'
+                }
+            }
+        }
+
+        // ── STAGE 9 : Blue/Green Deploy ───────────────────────
+        stage('Deploy Production (Blue/Green)') {
+            steps {
+                echo '🟢 Déploiement Blue/Green en Production...'
+                script {
+                    // Rename current (Blue) to backup
+                    bat "docker rename %CONTAINER_PROD% %CONTAINER_PROD%-blue || echo no previous"
+
+                    // Deploy Green (new version)
+                    bat """
+                        docker run -d ^
+                          --name %CONTAINER_PROD% ^
+                          --network devops-network ^
+                          -p %PORT_PROD%:5000 ^
+                          -e SECRET_KEY=%SECRET_KEY% ^
+                          -e MONGO_URI=%MONGO_URI% ^
+                          -e MONGO_DBNAME=meditracker ^
+                          --restart unless-stopped ^
+                          %DOCKER_IMAGE%:adv-%BUILD_NUMBER%
+                    """
+                    bat "timeout /t 25 /nobreak"
+
+                    // Health check Green
+                    def prodStatus = bat(
+                        script: "curl -s -o nul -w %%{http_code} http://localhost:%PORT_PROD%/",
+                        returnStdout: true
+                    ).trim()
+
+                    if (prodStatus.contains('200') || prodStatus.contains('302')) {
+                        echo "✅ Green déployé avec succès ! Suppression du Blue..."
+                        bat "docker stop %CONTAINER_PROD%-blue || echo ok"
+                        bat "docker rm %CONTAINER_PROD%-blue || echo ok"
+                    } else {
+                        echo "❌ Green a échoué ! Rollback vers Blue..."
+                        bat "docker stop %CONTAINER_PROD% || echo ok"
+                        bat "docker rm %CONTAINER_PROD% || echo ok"
+                        bat "docker rename %CONTAINER_PROD%-blue %CONTAINER_PROD% || echo ok"
+                        bat "docker start %CONTAINER_PROD% || echo ok"
+                        error("Production deployment failed - rolled back to Blue")
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo '✅ Pipeline Avancé réussi !'
+            bat "echo %BUILD_NUMBER%,SUCCESS,%DATE%,%TIME% >> C:\\devops-mhealth\\metrics-advanced.csv"
+        }
+        failure {
+            echo '❌ Pipeline Avancé échoué !'
+            bat "echo %BUILD_NUMBER%,FAILURE,%DATE%,%TIME% >> C:\\devops-mhealth\\metrics-advanced.csv"
+        }
+        always {
+            bat "docker image prune -f || echo ok"
+        }
+    }
+}

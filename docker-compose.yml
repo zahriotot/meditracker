@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+
+  # ── Application MediTracker ──────────────────────────────
+  meditracker:
+    build: .
+    container_name: meditracker-app
+    image: meditracker:latest
+    ports:
+      - "5000:5000"
+    environment:
+      - IP=0.0.0.0
+      - PORT=5000
+      - SECRET_KEY=${SECRET_KEY}
+      - MONGO_URI=${MONGO_URI}
+      - MONGO_DBNAME=${MONGO_DBNAME}
+    networks:
+      - devops-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+networks:
+  devops-network:
+    external: true
