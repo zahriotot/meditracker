@@ -56,9 +56,11 @@ pipeline {
         }
 
         stage('Health Check') {
+            
             steps {
                 echo '💓 Vérification santé...'
-                bat "timeout /t 20 /nobreak"
+                // Attente de 20 secondes (compatible Jenkins Windows)
+                bat "ping -n 21 127.0.0.1 > nul"
                 script {
                     def result = bat(
                         script: "curl -s -o nul -w %%{http_code} http://localhost:%APP_PORT%/",
@@ -68,6 +70,7 @@ pipeline {
                 }
             }
         }
+        
     }
 
     post {
