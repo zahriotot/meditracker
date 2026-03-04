@@ -33,24 +33,27 @@ pipeline {
         // Métrique : détecte les bugs/vulnérabilités
         // ─────────────────────────────────────────────────────
         stage('SonarQube Analysis') {
-            steps {
-                echo '🔍 Analyse de qualité du code avec SonarQube...'
-                withSonarQubeEnv('SonarQube') {
-                    bat """
-                        sonar-scanner ^
-                          -Dsonar.projectKey=meditracker ^
-                          -Dsonar.projectName="MediTracker mHealth" ^
-                          -Dsonar.projectVersion=1.%BUILD_NUMBER% ^
-                          -Dsonar.sources=. ^
-                          -Dsonar.language=py ^
-                          -Dsonar.python.version=3 ^
-                          -Dsonar.login=%SONAR_TOKEN% ^
-                          -Dsonar.host.url=%SONAR_HOST% ^
-                          -Dsonar.exclusions=**/static/**,**/templates/**,**/wireframes/**,**/*.md
-                    """
-                }
+    steps {
+        echo '🔍 Analyse de qualité du code avec SonarQube...'
+        withSonarQubeEnv('SonarQube') {
+            script {
+                def scannerHome = tool 'SonarQube Scanner'
+                bat """
+                    "${scannerHome}\\bin\\sonar-scanner.bat" ^
+                      -Dsonar.projectKey=meditracker ^
+                      -Dsonar.projectName="MediTracker mHealth" ^
+                      -Dsonar.projectVersion=1.%BUILD_NUMBER% ^
+                      -Dsonar.sources=. ^
+                      -Dsonar.language=py ^
+                      -Dsonar.python.version=3 ^
+                      -Dsonar.login=%SONAR_TOKEN% ^
+                      -Dsonar.host.url=http://host.docker.internal:9000 ^
+                      -Dsonar.exclusions=**/static/**,**/templates/**,**/wireframes/**,**/*.md
+                """
             }
         }
+    }
+}
 
         // ─────────────────────────────────────────────────────
         // STAGE 3 : Quality Gate
