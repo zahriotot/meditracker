@@ -5,6 +5,8 @@ pipeline {
         DOCKER_IMAGE = "meditracker"
         CONTAINER_NAME = "meditracker-simple"
         APP_PORT = "5001"
+        MONGO_URI = credentials('mongo-uri')
+        SECRET_KEY = credentials('secret-key')
     }
 
     stages {
@@ -27,27 +29,43 @@ pipeline {
         stage('Deploy') {
             steps {
                 echo '🚀 Déploiement direct (Rolling)...'
-                bat "docker stop %CONTAINER_NAME% || true"
-                bat "docker rm %CONTAINER_NAME% || true"
-                bat """
-                    docker run -d ^
-                      --name %CONTAINER_NAME% ^
-                      --network devops-network ^
-                      -p %APP_PORT%:5000 ^
-                      -e SECRET_KEY=%SECRET_KEY% ^
-                      -e MONGO_URI=%MONGO_URI% ^
-                      -e MONGO_DBNAME=meditracker ^
-                      --restart unless-stopped ^
-                      %DOCKER_IMAGE%:simple-%BUILD_NUMBER%
-                """
+                script {
+                    // Stop ancien container sans erreur si inexistant
+                    bat """
+                        docker stop %CONTAINER_NAME% 2>nul
+                        exit /b 0
+                    """
+                    bat """
+                        docker rm %CONTAINER_NAME% 2>nul
+                        exit /b 0
+                    """
+                    // Lance le nouveau container
+                    bat """
+                        docker run -d ^
+                          --name %CONTAINER_NAME% ^
+                          --network devops-network ^
+                          -p %APP_PORT%:5000 ^
+                          -e SECRET_KEY=%SECRET_KEY% ^
+                          -e MONGO_URI=%MONGO_URI% ^
+                          -e MONGO_DBNAME=meditracker ^
+                          --restart unless-stopped ^
+                          %DOCKER_IMAGE%:simple-%BUILD_NUMBER%
+                    """
+                }
             }
         }
 
         stage('Health Check') {
             steps {
-                echo '💓 Vérification...'
+                echo '💓 Vérification santé...'
                 bat "timeout /t 20 /nobreak"
-                bat "curl -f http://localhost:%APP_PORT%/ || echo Health check failed"
+                script {
+                    def result = bat(
+                        script: "curl -s -o nul -w %%{http_code} http://localhost:%APP_PORT%/",
+                        returnStdout: true
+                    ).trim()
+                    echo "HTTP Status: ${result}"
+                }
             }
         }
     }
@@ -55,16 +73,14 @@ pipeline {
     post {
         success {
             echo '✅ Pipeline Simple réussi !'
-            // Enregistre les métriques
-            bat "echo BUILD_NUMBER=%BUILD_NUMBER% >> C:\\devops-mhealth\\metrics-simple.txt"
-            bat "echo STATUS=SUCCESS >> C:\\devops-mhealth\\metrics-simple.txt"
-            bat "echo TIMESTAMP=%DATE% %TIME% >> C:\\devops-mhealth\\metrics-simple.txt"
+            bat "echo %BUILD_NUMBER%,SUCCESS,%DATE%,%TIME% >> C:\\devops-mhealth\\metrics-simple.csv"
         }
         failure {
             echo '❌ Pipeline Simple échoué !'
-            bat "echo BUILD_NUMBER=%BUILD_NUMBER% >> C:\\devops-mhealth\\metrics-simple.txt"
-            bat "echo STATUS=FAILURE >> C:\\devops-mhealth\\metrics-simple.txt"
-            bat "echo TIMESTAMP=%DATE% %TIME% >> C:\\devops-mhealth\\metrics-simple.txt"
+            bat "echo %BUILD_NUMBER%,FAILURE,%DATE%,%TIME% >> C:\\devops-mhealth\\metrics-simple.csv"
+        }
+        always {
+            bat "docker image prune -f 2>nul & exit /b 0"
         }
     }
 }
