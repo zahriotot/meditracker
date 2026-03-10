@@ -8,7 +8,7 @@ pipeline {
         MONGO_URI       = credentials('mongo-uri')
         SECRET_KEY      = credentials('secret-key')
         SONAR_TOKEN     = credentials('sonarqube-token')
-        SONAR_HOST      = "http://localhost:9000"
+        SONAR_HOST      = "http://192.168.240.1:9000"
         METRICS_FILE    = "C:\\devops-mhealth\\metrics-simple.csv"
         DEPLOY_START    = ""
         DEPLOY_END      = ""
@@ -47,7 +47,7 @@ pipeline {
                       -Dsonar.language=py ^
                       -Dsonar.python.version=3 ^
                       -Dsonar.token=%SONAR_TOKEN% ^
-                      -Dsonar.host.url=http://localhost:9000 ^
+                      -Dsonar.host.url=http://192.168.240.1:9000 ^
                       -Dsonar.exclusions=**/static/**,**/templates/**,**/wireframes/**,**/*.md
                 """
             }
