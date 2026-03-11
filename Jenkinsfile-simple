@@ -2,12 +2,12 @@ pipeline {
     agent any
 
     environment {
-        DOCKER_IMAGE = "meditracker"
+        DOCKER_IMAGE   = "meditracker"
         CONTAINER_NAME = "meditracker-simple"
-        APP_PORT = "5001"
-        MONGO_URI = credentials('mongo-uri')
-        SECRET_KEY = credentials('secret-key')
-        METRICS_FILE = "C:\\devops-mhealth\\metrics-simple.csv"
+        APP_PORT       = "5001"
+        MONGO_URI      = credentials('mongo-uri')
+        SECRET_KEY     = credentials('secret-key')
+        METRICS_FILE   = "C:\\devops-mhealth\\metrics-simple.csv"
     }
 
     stages {
@@ -19,68 +19,30 @@ pipeline {
             }
         }
 
-        stage('SonarQube Analysis') {
-            steps {
-                echo '🔍 Analyse SonarQube...'
-                script {
-                    def scannerHome = tool 'SonarQube Scanner'
-                    withSonarQubeEnv('SonarQube') {
-                        bat """
-                            "${scannerHome}\\bin\\sonar-scanner.bat" ^
-                              -Dsonar.projectKey=meditracker ^
-                              -Dsonar.projectName="MediTracker mHealth" ^
-                              -Dsonar.projectVersion=1.%BUILD_NUMBER% ^
-                              -Dsonar.sources=. ^
-                              -Dsonar.language=py ^
-                              -Dsonar.python.version=3 ^
-                              -Dsonar.exclusions=**/static/**,**/templates/**,**/wireframes/**,**/*.md
-                        """
-                    }
-                }
-            }
-        }
-
-        stage('Quality Gate') {
-            steps {
-                echo '🚦 Quality Gate...'
-                timeout(time: 3, unit: 'MINUTES') {
-                    waitForQualityGate abortPipeline: false
-                }
-            }
-        }
-
         stage('Build Docker Image') {
             steps {
-                echo '🐳 Build Docker...'
+                echo '🐳 Build de image Docker...'
                 bat "docker build -t %DOCKER_IMAGE%:simple-%BUILD_NUMBER% ."
                 bat "docker tag %DOCKER_IMAGE%:simple-%BUILD_NUMBER% %DOCKER_IMAGE%:simple-latest"
             }
         }
 
-        stage('Deploy') {
+        stage('Deploy Rolling') {
             steps {
                 echo '🚀 Déploiement Rolling...'
-                script {
-                    bat """
-                        docker stop %CONTAINER_NAME% 2>nul
-                        exit /b 0
-                    """
-                    bat """
-                        docker rm %CONTAINER_NAME% 2>nul
-                        exit /b 0
-                    """
-                    bat """
-                        docker run -d ^
-                          --name %CONTAINER_NAME% ^
-                          --network devops-network ^
-                          -p %APP_PORT%:5000 ^
-                          -e SECRET_KEY=%SECRET_KEY% ^
-                          -e MONGO_URI=%MONGO_URI% ^
-                          -e MONGO_DBNAME=meditracker ^
-                          --restart unless-stopped ^
-                          %DOCKER_IMAGE%:simple-%BUILD_NUMBER%
-                    """
-                }
+                bat "docker stop %CONTAINER_NAME% 2>nul & exit /b 0"
+                bat "docker rm   %CONTAINER_NAME% 2>nul & exit /b 0"
+                bat """
+                    docker run -d ^
+                      --name %CONTAINER_NAME% ^
+                      --network devops-network ^
+                      -p %APP_PORT%:5000 ^
+                      -e SECRET_KEY=%SECRET_KEY% ^
+                      -e MONGO_URI=%MONGO_URI% ^
+                      -e MONGO_DBNAME=meditracker ^
+                      --restart unless-stopped ^
+                      %DOCKER_IMAGE%:simple-%BUILD_NUMBER%
+                """
             }
         }
 
@@ -89,20 +51,21 @@ pipeline {
                 echo '💓 Health Check...'
                 bat "ping -n 21 127.0.0.1 > nul"
                 script {
-                    def result = bat(
+                    def status = bat(
                         script: "curl -s -o nul -w %%{http_code} http://localhost:%APP_PORT%/",
                         returnStdout: true
                     ).trim()
-                    echo "HTTP Status: ${result}"
+                    echo "HTTP Status: ${status}"
                 }
             }
         }
 
         stage('Collect Metrics') {
             steps {
-                echo '📊 Collecte métriques...'
+                echo '📊 Enregistrement des métriques...'
+                bat "if not exist C:\\devops-mhealth mkdir C:\\devops-mhealth"
                 bat """
-                    echo BUILD_%BUILD_NUMBER%,SUCCESS,%DATE%,%TIME%,ROLLING >> %METRICS_FILE%
+                    echo %BUILD_NUMBER%,SIMPLE,ROLLING,%DATE%,%TIME%,SUCCESS >> %METRICS_FILE%
                 """
             }
         }
@@ -110,12 +73,12 @@ pipeline {
 
     post {
         success {
-            echo '✅ Pipeline Simple RÉUSSI'
-            bat "echo %BUILD_NUMBER%,SUCCESS,%DATE%,%TIME% >> %METRICS_FILE%"
+            echo '✅ Pipeline Simple RÉUSSI !'
+            bat "echo %BUILD_NUMBER%,SUCCESS >> %METRICS_FILE%"
         }
         failure {
-            echo '❌ Pipeline Simple ÉCHOUÉ'
-            bat "echo %BUILD_NUMBER%,FAILURE,%DATE%,%TIME% >> %METRICS_FILE%"
+            echo '❌ Pipeline Simple ÉCHOUÉ !'
+            bat "echo %BUILD_NUMBER%,FAILURE >> %METRICS_FILE%"
         }
         always {
             bat "docker image prune -f 2>nul & exit /b 0"
