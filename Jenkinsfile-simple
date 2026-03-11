@@ -2,99 +2,65 @@ pipeline {
     agent any
 
     environment {
-        DOCKER_IMAGE    = "meditracker"
-        CONTAINER_NAME  = "meditracker-simple"
-        APP_PORT        = "5001"
-        MONGO_URI       = credentials('mongo-uri')
-        SECRET_KEY      = credentials('secret-key')
-        SONAR_TOKEN     = credentials('sonarqube-token')
-        SONAR_HOST      = "http://192.168.240.1:9000"
-        METRICS_FILE    = "C:\\devops-mhealth\\metrics-simple.csv"
-        DEPLOY_START    = ""
-        DEPLOY_END      = ""
+        DOCKER_IMAGE = "meditracker"
+        CONTAINER_NAME = "meditracker-simple"
+        APP_PORT = "5001"
+        MONGO_URI = credentials('mongo-uri')
+        SECRET_KEY = credentials('secret-key')
+        METRICS_FILE = "C:\\devops-mhealth\\metrics-simple.csv"
     }
 
     stages {
 
-        // ─────────────────────────────────────────────────────
-        // STAGE 1 : Checkout
-        // ─────────────────────────────────────────────────────
         stage('Checkout') {
             steps {
-                echo '📥 Récupération du code source...'
+                echo '📥 Récupération du code...'
                 checkout scm
-                bat "git log -1 --oneline"
             }
         }
 
-        // ─────────────────────────────────────────────────────
-        // STAGE 2 : Analyse SonarQube
-        // Objectif : mesurer la qualité du code AVANT le build
-        // Métrique : détecte les bugs/vulnérabilités
-        // ─────────────────────────────────────────────────────
-      stage('SonarQube Analysis') {
-    steps {
-        echo '🔍 Analyse de qualité du code avec SonarQube...'
-        withSonarQubeEnv('SonarQube') {
-            script {
-                def scannerHome = tool 'SonarQube Scanner'
-                bat """
-                    "${scannerHome}\\bin\\sonar-scanner.bat" ^
-                      -Dsonar.projectKey=meditracker ^
-                      -Dsonar.projectName="MediTracker mHealth" ^
-                      -Dsonar.projectVersion=1.%BUILD_NUMBER% ^
-                      -Dsonar.sources=. ^
-                      -Dsonar.language=py ^
-                      -Dsonar.python.version=3 ^
-                      -Dsonar.token=%SONAR_TOKEN% ^
-                      -Dsonar.host.url=http://192.168.240.1:9000 ^
-                      -Dsonar.exclusions=**/static/**,**/templates/**,**/wireframes/**,**/*.md
-                """
+        stage('SonarQube Analysis') {
+            steps {
+                echo '🔍 Analyse SonarQube...'
+                script {
+                    def scannerHome = tool 'SonarQube Scanner'
+                    withSonarQubeEnv('SonarQube') {
+                        bat """
+                            "${scannerHome}\\bin\\sonar-scanner.bat" ^
+                              -Dsonar.projectKey=meditracker ^
+                              -Dsonar.projectName="MediTracker mHealth" ^
+                              -Dsonar.projectVersion=1.%BUILD_NUMBER% ^
+                              -Dsonar.sources=. ^
+                              -Dsonar.language=py ^
+                              -Dsonar.python.version=3 ^
+                              -Dsonar.exclusions=**/static/**,**/templates/**,**/wireframes/**,**/*.md
+                        """
+                    }
+                }
             }
         }
-    }
-}
 
-        // ─────────────────────────────────────────────────────
-        // STAGE 3 : Quality Gate
-        // Objectif : bloquer le pipeline si le code est mauvais
-        // Métrique : contribue au taux d'échec des déploiements
-        // ─────────────────────────────────────────────────────
         stage('Quality Gate') {
             steps {
-                echo '🚦 Vérification du Quality Gate SonarQube...'
-                timeout(time: 5, unit: 'MINUTES') {
+                echo '🚦 Quality Gate...'
+                timeout(time: 3, unit: 'MINUTES') {
                     waitForQualityGate abortPipeline: false
                 }
-                echo '✅ Quality Gate vérifié'
             }
         }
 
-        // ─────────────────────────────────────────────────────
-        // STAGE 4 : Build Docker Image
-        // ─────────────────────────────────────────────────────
         stage('Build Docker Image') {
             steps {
-                echo "🐳 Build de l'image Docker..."
+                echo '🐳 Build Docker...'
                 bat "docker build -t %DOCKER_IMAGE%:simple-%BUILD_NUMBER% ."
                 bat "docker tag %DOCKER_IMAGE%:simple-%BUILD_NUMBER% %DOCKER_IMAGE%:simple-latest"
-                bat "docker images | findstr meditracker"
             }
         }
 
-        // ─────────────────────────────────────────────────────
-        // STAGE 5 : Deploy (Rolling)
-        // Stratégie : Rolling — arrêt puis redémarrage direct
-        // Métrique : temps de déploiement, incidents post-deploy
-        // ─────────────────────────────────────────────────────
         stage('Deploy') {
             steps {
                 echo '🚀 Déploiement Rolling...'
                 script {
-                    // Enregistre l'heure de début du déploiement
-                    bat "echo DEPLOY_START=%DATE%_%TIME% >> %METRICS_FILE%"
-
-                    // Arrêt de l'ancien container
                     bat """
                         docker stop %CONTAINER_NAME% 2>nul
                         exit /b 0
@@ -103,8 +69,6 @@ pipeline {
                         docker rm %CONTAINER_NAME% 2>nul
                         exit /b 0
                     """
-
-                    // Lancement du nouveau container
                     bat """
                         docker run -d ^
                           --name %CONTAINER_NAME% ^
@@ -116,136 +80,44 @@ pipeline {
                           --restart unless-stopped ^
                           %DOCKER_IMAGE%:simple-%BUILD_NUMBER%
                     """
-
-                    // Enregistre l'heure de fin du déploiement
-                    bat "echo DEPLOY_END=%DATE%_%TIME% >> %METRICS_FILE%"
                 }
             }
         }
 
-        // ─────────────────────────────────────────────────────
-        // STAGE 6 : Health Check
-        // Objectif : vérifier que l'app répond après le deploy
-        // Métrique : disponibilité + incidents post-déploiement
-        // ─────────────────────────────────────────────────────
         stage('Health Check') {
             steps {
-                echo '💓 Vérification de santé post-déploiement...'
-
-                // Attendre que l'app démarre (20 secondes)
+                echo '💓 Health Check...'
                 bat "ping -n 21 127.0.0.1 > nul"
-
                 script {
-                    def attempts = 0
-                    def maxAttempts = 5
-                    def healthy = false
-
-                    // 5 tentatives de health check
-                    while (attempts < maxAttempts && !healthy) {
-                        attempts++
-                        echo "Tentative ${attempts}/${maxAttempts}..."
-
-                        def httpCode = bat(
-                            script: "curl -s -o nul -w %%{http_code} http://localhost:%APP_PORT%/",
-                            returnStdout: true
-                        ).trim()
-
-                        echo "HTTP Status: ${httpCode}"
-
-                        if (httpCode.contains('200') || httpCode.contains('302')) {
-                            healthy = true
-                            echo "✅ Application opérationnelle !"
-
-                            // Enregistre : disponibilité OK
-                            bat "echo HEALTH_CHECK=SUCCESS,ATTEMPT=${attempts} >> %METRICS_FILE%"
-                        } else {
-                            bat "ping -n 11 127.0.0.1 > nul"
-                        }
-                    }
-
-                    if (!healthy) {
-                        // Enregistre l'incident
-                        bat "echo HEALTH_CHECK=FAILURE,INCIDENTS=1 >> %METRICS_FILE%"
-                        echo "❌ Health check échoué après ${maxAttempts} tentatives"
-                        // Ne bloque pas le pipeline — on enregistre juste
-                    }
+                    def result = bat(
+                        script: "curl -s -o nul -w %%{http_code} http://localhost:%APP_PORT%/",
+                        returnStdout: true
+                    ).trim()
+                    echo "HTTP Status: ${result}"
                 }
             }
         }
 
-        // ─────────────────────────────────────────────────────
-        // STAGE 7 : Collecte des métriques
-        // Objectif : enregistrer toutes les métriques du build
-        // ─────────────────────────────────────────────────────
         stage('Collect Metrics') {
             steps {
-                echo '📊 Collecte et enregistrement des métriques...'
-                script {
-                    // Récupère l'état du container (disponibilité)
-                    def containerStatus = bat(
-                        script: "docker inspect --format={{.State.Status}} %CONTAINER_NAME% 2>nul",
-                        returnStdout: true
-                    ).trim()
-
-                    echo "État container: ${containerStatus}"
-
-                    // Enregistre toutes les métriques dans le CSV
-                    bat """
-                        echo BUILD_NUMBER=%BUILD_NUMBER%,STATUS=SUCCESS,CONTAINER=${containerStatus},PIPELINE=SIMPLE,STRATEGY=ROLLING,DATE=%DATE%,TIME=%TIME% >> %METRICS_FILE%
-                    """
-
-                    // Affiche un résumé dans la console Jenkins
-                    echo """
-                    ╔══════════════════════════════════════════════╗
-                    ║         MÉTRIQUES - PIPELINE SIMPLE          ║
-                    ╠══════════════════════════════════════════════╣
-                    ║  Build Number  : ${BUILD_NUMBER}             ║
-                    ║  Pipeline      : Simple (Rolling)            ║
-                    ║  SonarQube     : ✅ Analysé                  ║
-                    ║  Quality Gate  : ✅ Vérifié                  ║
-                    ║  Deploy        : ✅ Rolling                  ║
-                    ║  Container     : ${containerStatus}          ║
-                    ╚══════════════════════════════════════════════╝
-                    """
-                }
+                echo '📊 Collecte métriques...'
+                bat """
+                    echo BUILD_%BUILD_NUMBER%,SUCCESS,%DATE%,%TIME%,ROLLING >> %METRICS_FILE%
+                """
             }
         }
     }
 
-    // ─────────────────────────────────────────────────────────
-    // POST PIPELINE : Enregistrement final des métriques
-    // ─────────────────────────────────────────────────────────
     post {
         success {
             echo '✅ Pipeline Simple RÉUSSI'
-            bat """
-                echo ===BUILD_%BUILD_NUMBER%=== >> %METRICS_FILE%
-                echo PIPELINE=SIMPLE >> %METRICS_FILE%
-                echo STRATEGIE=ROLLING >> %METRICS_FILE%
-                echo RESULTAT=SUCCES >> %METRICS_FILE%
-                echo SONARQUBE=OUI >> %METRICS_FILE%
-                echo MONITORING=NON >> %METRICS_FILE%
-                echo DATE=%DATE% >> %METRICS_FILE%
-                echo TIME=%TIME% >> %METRICS_FILE%
-                echo ========================= >> %METRICS_FILE%
-            """
+            bat "echo %BUILD_NUMBER%,SUCCESS,%DATE%,%TIME% >> %METRICS_FILE%"
         }
         failure {
             echo '❌ Pipeline Simple ÉCHOUÉ'
-            bat """
-                echo ===BUILD_%BUILD_NUMBER%=== >> %METRICS_FILE%
-                echo PIPELINE=SIMPLE >> %METRICS_FILE%
-                echo STRATEGIE=ROLLING >> %METRICS_FILE%
-                echo RESULTAT=ECHEC >> %METRICS_FILE%
-                echo SONARQUBE=OUI >> %METRICS_FILE%
-                echo MONITORING=NON >> %METRICS_FILE%
-                echo DATE=%DATE% >> %METRICS_FILE%
-                echo TIME=%TIME% >> %METRICS_FILE%
-                echo ========================= >> %METRICS_FILE%
-            """
+            bat "echo %BUILD_NUMBER%,FAILURE,%DATE%,%TIME% >> %METRICS_FILE%"
         }
         always {
-            echo '🧹 Nettoyage des anciennes images...'
             bat "docker image prune -f 2>nul & exit /b 0"
         }
     }
